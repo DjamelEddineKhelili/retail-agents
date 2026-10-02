@@ -6,10 +6,10 @@ two Gemini agents cooperate on certified retail metrics, and **nothing is execut
 ```mermaid
 flowchart LR
     DB[(Certified metrics<br/>cm_* views)]
-    A[🧮 Analyst agent<br/>finds stock problems]
-    R[🔍 Reviewer agent<br/>re-checks every number]
-    H[👤 Human<br/>approve / edit / reject]
-    X[📦 Executor<br/>plain Python, no LLM]
+    A[Analyst agent<br/>finds stock problems]
+    R[Reviewer agent<br/>re-checks every number]
+    H[Human<br/>approve / edit / reject]
+    X[Executor<br/>plain Python, no LLM]
     DB -- read-only SQL --> A
     DB -- read-only SQL --> R
     A -- proposals --> R
@@ -63,13 +63,13 @@ A scripted fake model plays both agents, so the plumbing is tested deterministic
 
 ## What worked, what failed
 
-- ✅ SQLite's authorizer correctly blocks direct reads of `raw_*` tables while allowing them *inside* certified views.
-- ❌ **Found a bypass:** `SELECT ... FROM cm_daily_sales JOIN raw_sales USING(store_id)` slipped through, because SQLite doesn't report the `USING` column of the right-hand table to the authorizer. **Fix:** a second guard that refuses any query naming a `raw_` table. Regression test included.
-- ❌ `COUNT(*)` on a simple view was wrongly blocked (SQLite reports a column-less read of the underlying table). **Fix:** allow reads that touch no column values.
-- ❌ **First live run crashed** on `503 UNAVAILABLE` ("model experiencing high demand"). A pilot can't die because the API had a busy minute. **Fix:** exponential backoff on 429/5xx errors, then automatic fallback to the next Gemini model, with a clean message if everything is down. Tests simulate the outage.
-- ❌ **Second live run hit the free-tier quota:** Flash models allow only 5 requests/min and 20/day, and an agent makes one request per step. **Fixes:** (1) default to Flash Lite (15/min, 500/day); (2) pace calls to stay under the per-minute limit instead of hitting it; (3) honour Google's "retry in Xs" hint; (4) skip straight to the next model on a daily-quota or 404 error; (5) prompt both agents to batch: one query for all rows, all tool calls in one turn. Fewer steps = cheaper and faster.
-- ❌ **The Reviewer contradicted itself.** In a live run its explanation said *"ceil(26.89 × 18 − 30) = 455"*, but the number it actually submitted was **472**, while the Analyst had proposed 407. Two AIs, three different numbers, and the right one only appeared in free text. **Fix:** arithmetic moved out of the LLM entirely. A `reorder_quantity` tool computes the official formula in code; every reorder proposal carries the code's value, the human screen shows it next to the AI numbers with a ⚠️ when they differ, and approval defaults to the code's value. Lesson: **let the LLM decide *whether* to act; let code compute *how much*.**
-- ❌ **The Analyst misses things, and the Reviewer can't see what was never proposed.** The data contains 6 real problems (4 stockout risks, 2 overstocks). The Analyst found 4/6 in the first complete run and 5/6 in the latest one; in both runs it missed `SKU-301 @ PAR01` (19.4 days of cover vs a 21-day lead time). In the first run it even wrote that 19.4 and 16.7 were "not strictly less than" 21 and 18, which is false. The Reviewer only checks proposals it is handed, so an omission passes silently. **Next fix:** a deterministic coverage check in code (run the stockout/overstock rules in SQL, compare with the proposals, show any missing item to the human).
+- WORKED: SQLite's authorizer correctly blocks direct reads of `raw_*` tables while allowing them *inside* certified views.
+- FAIL: **Found a bypass:** `SELECT ... FROM cm_daily_sales JOIN raw_sales USING(store_id)` slipped through, because SQLite doesn't report the `USING` column of the right-hand table to the authorizer. **Fix:** a second guard that refuses any query naming a `raw_` table. Regression test included.
+- FAIL: `COUNT(*)` on a simple view was wrongly blocked (SQLite reports a column-less read of the underlying table). **Fix:** allow reads that touch no column values.
+- FAIL: **First live run crashed** on `503 UNAVAILABLE` ("model experiencing high demand"). A pilot can't die because the API had a busy minute. **Fix:** exponential backoff on 429/5xx errors, then automatic fallback to the next Gemini model, with a clean message if everything is down. Tests simulate the outage.
+- FAIL: **Second live run hit the free-tier quota:** Flash models allow only 5 requests/min and 20/day, and an agent makes one request per step. **Fixes:** (1) default to Flash Lite (15/min, 500/day); (2) pace calls to stay under the per-minute limit instead of hitting it; (3) honour Google's "retry in Xs" hint; (4) skip straight to the next model on a daily-quota or 404 error; (5) prompt both agents to batch: one query for all rows, all tool calls in one turn. Fewer steps = cheaper and faster.
+- FAIL: **The Reviewer contradicted itself.** In a live run its explanation said *"ceil(26.89 × 18 − 30) = 455"*, but the number it actually submitted was **472**, while the Analyst had proposed 407. Two AIs, three different numbers, and the right one only appeared in free text. **Fix:** arithmetic moved out of the LLM entirely. A `reorder_quantity` tool computes the official formula in code; every reorder proposal carries the code's value, the human screen shows it next to the AI numbers with a ⚠️ when they differ, and approval defaults to the code's value. Lesson: **let the LLM decide *whether* to act; let code compute *how much*.**
+- FAIL: **The Analyst misses things, and the Reviewer can't see what was never proposed.** The data contains 6 real problems (4 stockout risks, 2 overstocks). The Analyst found 4/6 in the first complete run and 5/6 in the latest one; in both runs it missed `SKU-301 @ PAR01` (19.4 days of cover vs a 21-day lead time). In the first run it even wrote that 19.4 and 16.7 were "not strictly less than" 21 and 18, which is false. The Reviewer only checks proposals it is handed, so an omission passes silently. **Next fix:** a deterministic coverage check in code (run the stockout/overstock rules in SQL, compare with the proposals, show any missing item to the human).
 
 ## Live run results (Gemini 3.5 Flash Lite, free tier)
 
